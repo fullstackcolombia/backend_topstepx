@@ -4,16 +4,20 @@
   "private": true,
   "description": "TopstepX execution panel with API and WebSocket backend",
   "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "dev": "node src/server.js",
     "start": "node src/server.js",
-    "check": "node --check src/server.js && node --check src/engine.js && node --check src/state.js && node --check src/topstepxAdapter.js && node --check src/validators.js && node --check src/marketSimulator.js && node --check src/supabaseClient.js && node --check src/persistence.js"
+    "check": "node --check src/server.js && node --check src/engine.js && node --check src/state.js && node --check src/topstepxAdapter.js && node --check src/validators.js && node --check src/marketSimulator.js && node --check src/supabaseClient.js && node --check src/persistence.js && node --check src/swagger.js"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.54.0",
+    "@supabase/supabase-js": "2.54.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "swagger-ui-express": "^5.0.1",
     "ws": "^8.18.0",
     "zod": "^3.23.8"
   }
