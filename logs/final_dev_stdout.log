@@ -1,0 +1,5 @@
+
+> panel-topstepx@1.0.0 dev
+> node src/server.js
+
+Panel TopstepX running on http://localhost:8787
