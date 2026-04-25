@@ -9,7 +9,7 @@ export const riskSchema = z.object({
 
 export const baseOrderSchema = z.object({
   orderType: z.enum(['BUY_MARKET', 'SELL_MARKET', 'BUY_STOP', 'SELL_STOP', 'OCO_BRACKET', 'BREAKOUT_BRACKET']),
-  accounts: z.array(z.string().min(2)).min(1),
+  accounts: z.array(z.string().min(1)).min(1),
   instrument: z.string().min(2),
   qty: z.number().int().min(1).max(200),
   stopLoss: z.number().min(1).max(200),

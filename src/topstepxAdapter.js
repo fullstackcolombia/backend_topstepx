@@ -3,20 +3,246 @@ import { appendLog, state } from './state.js';
 export class TopstepxAdapter {
   constructor() {
     this.mode = process.env.PANEL_MODE || 'paper';
-    this.apiBase = process.env.TOPSTEPX_API_BASE || '';
+    this.apiBase = (process.env.TOPSTEPX_API_BASE || 'https://api.topstepx.com').replace(/\/$/, '');
+    this.userName = process.env.TOPSTEPX_USER_NAME || process.env.TOPSTEPX_USERNAME || '';
     this.apiKey = process.env.TOPSTEPX_API_KEY || '';
-    this.apiSecret = process.env.TOPSTEPX_API_SECRET || '';
+    this.defaultMaxQty = Number(process.env.TOPSTEPX_DEFAULT_MAX_QTY || 30);
+    this.sessionToken = '';
+    this.lastAuthAt = 0;
+    this.authCooldownMs = 60 * 1000;
+    this.contractCache = [];
+    this.contractCacheAt = 0;
+    this.contractCacheTtlMs = 60 * 1000;
   }
 
   async connect() {
-    if (this.mode === 'live' && (!this.apiBase || !this.apiKey || !this.apiSecret)) {
+    if (this.mode === 'live' && (!this.apiBase || !this.apiKey || !this.userName)) {
       state.connection.topstepx = 'ERROR';
-      appendLog('ERROR', 'TopstepX live mode needs TOPSTEPX_API_BASE, TOPSTEPX_API_KEY, TOPSTEPX_API_SECRET');
+      appendLog(
+        'ERROR',
+        'TopstepX live mode needs TOPSTEPX_API_BASE, TOPSTEPX_USER_NAME and TOPSTEPX_API_KEY'
+      );
       return false;
     }
+
+    if (this.mode === 'live') {
+      try {
+        await this.authenticate();
+        await this.syncLiveAccounts();
+      } catch (error) {
+        state.connection.topstepx = 'ERROR';
+        appendLog('ERROR', error.message || 'TopstepX authentication failed');
+        return false;
+      }
+    }
+
     state.connection.topstepx = this.mode === 'live' ? 'CONNECTED' : 'SIMULATED';
     appendLog('INFO', `TopstepX adapter ready in ${this.mode} mode`);
     return true;
+  }
+
+  async authenticate(force = false) {
+    if (this.mode !== 'live') {
+      return;
+    }
+
+    const now = Date.now();
+    if (!force && this.sessionToken && now - this.lastAuthAt < this.authCooldownMs) {
+      return;
+    }
+
+    const response = await fetch(`${this.apiBase}/api/Auth/loginKey`, {
+      method: 'POST',
+      headers: {
+        Accept: 'text/plain',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        userName: this.userName,
+        apiKey: this.apiKey
+      })
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`TopstepX loginKey rejected: ${response.status} ${text}`);
+    }
+
+    const payload = await response.json();
+    if (!payload?.success || !payload?.token) {
+      const message = payload?.errorMessage || 'Missing token in loginKey response';
+      const code = Number(payload?.errorCode ?? -1);
+      throw new Error(`TopstepX loginKey failed (errorCode=${code}): ${message}`);
+    }
+
+    this.sessionToken = payload.token;
+    this.lastAuthAt = now;
+  }
+
+  async syncLiveAccounts() {
+    const response = await this.request('/api/Account/search', { onlyActiveAccounts: true });
+    const currentSelected = new Set(state.accounts.filter((account) => account.selected).map((account) => account.id));
+
+    if (!Array.isArray(response?.accounts) || response.accounts.length === 0) {
+      appendLog('WARN', 'TopstepX account search returned no active accounts');
+      return;
+    }
+
+    state.accounts = response.accounts.map((account, index) => {
+      const id = String(account.id);
+      return {
+        id,
+        firm: 'TopstepX',
+        qty: this.defaultMaxQty,
+        status: account.canTrade ? 'OK' : 'WARN',
+        pnl: 0,
+        sync: 'OK',
+        selected: currentSelected.size > 0 ? currentSelected.has(id) : index === 0,
+        position: 0,
+        tradesToday: 0
+      };
+    });
+
+    appendLog('INFO', `TopstepX live accounts synced: ${state.accounts.length}`);
+  }
+
+  async request(path, body, retryOnUnauthorized = true) {
+    await this.authenticate();
+
+    const response = await fetch(`${this.apiBase}${path}`, {
+      method: 'POST',
+      headers: {
+        Accept: 'text/plain',
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.sessionToken}`
+      },
+      body: JSON.stringify(body || {})
+    });
+
+    if (response.status === 401 && retryOnUnauthorized) {
+      await this.authenticate(true);
+      return this.request(path, body, false);
+    }
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`TopstepX request failed ${path}: ${response.status} ${text}`);
+    }
+
+    const payload = await response.json();
+    if (payload && Object.prototype.hasOwnProperty.call(payload, 'success') && !payload.success) {
+      const code = Number(payload?.errorCode ?? -1);
+      const message = payload?.errorMessage || `Gateway error at ${path}`;
+      throw new Error(`TopstepX request failed ${path} (errorCode=${code}): ${message}`);
+    }
+
+    return payload;
+  }
+
+  parseAccountId(value) {
+    if (typeof value === 'number' && Number.isInteger(value)) {
+      return value;
+    }
+
+    if (typeof value === 'string') {
+      const numeric = Number.parseInt(value, 10);
+      if (Number.isFinite(numeric)) {
+        return numeric;
+      }
+    }
+
+    return null;
+  }
+
+  async fetchAvailableContracts() {
+    const now = Date.now();
+    if (this.contractCache.length > 0 && now - this.contractCacheAt < this.contractCacheTtlMs) {
+      return this.contractCache;
+    }
+
+    const response = await this.request('/api/Contract/available', { live: true });
+    this.contractCache = Array.isArray(response?.contracts) ? response.contracts : [];
+    this.contractCacheAt = now;
+    return this.contractCache;
+  }
+
+  normalizeText(value) {
+    return String(value || '')
+      .trim()
+      .toUpperCase();
+  }
+
+  async resolveContractId(instrument, explicitContractId) {
+    if (explicitContractId && typeof explicitContractId === 'string') {
+      return explicitContractId;
+    }
+
+    const mapRaw = process.env.TOPSTEPX_CONTRACT_MAP || '{}';
+    let map = {};
+    try {
+      map = JSON.parse(mapRaw);
+    } catch (_error) {
+      map = {};
+    }
+
+    if (instrument && map[instrument]) {
+      return String(map[instrument]);
+    }
+
+    const query = this.normalizeText(instrument);
+    if (!query) {
+      throw new Error('TopstepX order needs contractId or instrument');
+    }
+
+    const contracts = await this.fetchAvailableContracts();
+    const match = contracts.find((contract) => {
+      const id = this.normalizeText(contract.id);
+      const name = this.normalizeText(contract.name);
+      const symbolId = this.normalizeText(contract.symbolId);
+      const description = this.normalizeText(contract.description);
+      return id === query || name === query || symbolId === query || description.includes(query);
+    });
+
+    if (!match) {
+      throw new Error(
+        `TopstepX contract not found for instrument "${instrument}". Provide contractId or TOPSTEPX_CONTRACT_MAP.`
+      );
+    }
+
+    return String(match.id);
+  }
+
+  mapOrderToPlaceOrder(order, accountId, contractId) {
+    if (!accountId) {
+      throw new Error('TopstepX order needs numeric accountId');
+    }
+
+    if (!contractId || typeof contractId !== 'string') {
+      throw new Error('TopstepX order needs contractId');
+    }
+
+    const mapping = {
+      BUY_MARKET: { type: 2, side: 0 },
+      SELL_MARKET: { type: 2, side: 1 },
+      BUY_STOP: { type: 4, side: 0 },
+      SELL_STOP: { type: 4, side: 1 }
+    };
+
+    const mapped = mapping[order?.orderType];
+    if (!mapped) {
+      throw new Error(`Unsupported orderType for TopstepX live mode: ${order?.orderType || 'undefined'}`);
+    }
+
+    return {
+      accountId,
+      contractId,
+      type: mapped.type,
+      side: mapped.side,
+      size: Number(order.qty || 1),
+      ...(Number.isFinite(order?.limitPrice) ? { limitPrice: Number(order.limitPrice) } : {}),
+      ...(Number.isFinite(order?.stopPrice) ? { stopPrice: Number(order.stopPrice) } : {}),
+      ...(typeof order?.customTag === 'string' ? { customTag: order.customTag } : {})
+    };
   }
 
   async sendOrder(order) {
@@ -30,25 +256,35 @@ export class TopstepxAdapter {
       };
     }
 
-    // Keep the live adapter explicit and conservative until API details are confirmed.
-    const headers = {
-      'Content-Type': 'application/json',
-      'X-API-KEY': this.apiKey,
-      'X-API-SECRET': this.apiSecret
-    };
+    const accountIds = (order?.accounts || [])
+      .map((account) => this.parseAccountId(account))
+      .filter((accountId) => Number.isInteger(accountId));
 
-    const response = await fetch(`${this.apiBase}/orders`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(order)
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`TopstepX order rejected: ${response.status} ${text}`);
+    if (accountIds.length === 0 && Number.isInteger(order?.accountId)) {
+      accountIds.push(order.accountId);
     }
 
-    return response.json();
+    if (accountIds.length === 0) {
+      throw new Error('TopstepX order needs at least one numeric accountId');
+    }
+
+    const contractId = await this.resolveContractId(order?.instrument, order?.contractId);
+    const responses = [];
+    for (const accountId of accountIds) {
+      const placeOrderPayload = this.mapOrderToPlaceOrder(order, accountId, contractId);
+      const response = await this.request('/api/Order/place', placeOrderPayload);
+      responses.push({
+        accountId,
+        ...response,
+        externalOrderId: response?.orderId || null
+      });
+    }
+
+    const response = responses[0];
+    return {
+      ...response,
+      accountResponses: responses
+    };
   }
 
   async flattenAll(accounts) {
@@ -56,21 +292,31 @@ export class TopstepxAdapter {
       return { ok: true, mode: 'paper', flattenedAccounts: accounts };
     }
 
-    const response = await fetch(`${this.apiBase}/orders/flatten-all`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-API-KEY': this.apiKey,
-        'X-API-SECRET': this.apiSecret
-      },
-      body: JSON.stringify({ accounts })
-    });
+    const flattened = [];
+    for (const account of accounts || []) {
+      const accountId = this.parseAccountId(account);
+      if (!accountId) {
+        continue;
+      }
 
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`TopstepX flatten-all rejected: ${response.status} ${text}`);
+      const search = await this.request('/api/Position/searchOpen', { accountId });
+      for (const position of search?.positions || []) {
+        const closeResponse = await this.request('/api/Position/closeContract', {
+          accountId,
+          contractId: position.contractId
+        });
+
+        flattened.push({
+          accountId,
+          contractId: position.contractId,
+          success: Boolean(closeResponse?.success)
+        });
+      }
     }
 
-    return response.json();
+    return {
+      ok: true,
+      flattened
+    };
   }
 }
