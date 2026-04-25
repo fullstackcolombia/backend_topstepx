@@ -10,6 +10,7 @@ panel topstepx
 
 - Configura `CORS_ORIGINS` en `.env` como lista separada por comas.
 - Ejemplo: `CORS_ORIGINS=http://localhost:3000,https://tu-frontend.com`
+- Soporta patrones con `*` para previews de Vercel. Ejemplo: `CORS_ORIGINS=http://localhost:3000,https://tu-frontend.com,https://*.vercel.app`
 
 ## TopstepX live
 

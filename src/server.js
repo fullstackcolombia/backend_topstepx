@@ -43,6 +43,42 @@ const corsOrigins = String(process.env.CORS_ORIGINS || '')
   .map((origin) => origin.trim())
   .filter(Boolean);
 
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeOrigin(value) {
+  if (!value) {
+    return '';
+  }
+
+  try {
+    return new URL(value).origin;
+  } catch (_error) {
+    return String(value).trim();
+  }
+}
+
+function originMatchesPattern(pattern, origin) {
+  const normalizedPattern = normalizeOrigin(pattern);
+  const normalizedOrigin = normalizeOrigin(origin);
+
+  if (!normalizedPattern || !normalizedOrigin) {
+    return false;
+  }
+
+  if (normalizedPattern === '*' || normalizedPattern === normalizedOrigin) {
+    return true;
+  }
+
+  if (!normalizedPattern.includes('*')) {
+    return false;
+  }
+
+  const regex = new RegExp(`^${escapeRegex(normalizedPattern).replace(/\\\*/g, '.*')}$`);
+  return regex.test(normalizedOrigin);
+}
+
 function isOriginAllowed(origin) {
   // Allow non-browser clients that do not send Origin.
   if (!origin) {
@@ -54,7 +90,7 @@ function isOriginAllowed(origin) {
     return true;
   }
 
-  return corsOrigins.includes(origin);
+  return corsOrigins.some((allowedOrigin) => originMatchesPattern(allowedOrigin, origin));
 }
 
 const corsOptions = {
@@ -252,6 +288,7 @@ app.use((error, _req, res, _next) => {
 
 wss.on('connection', (socket, request) => {
   if (!isOriginAllowed(request.headers.origin)) {
+    appendLog('WARN', 'WS origin rejected', { origin: request.headers.origin || null });
     socket.close(1008, 'Origin not allowed');
     return;
   }
