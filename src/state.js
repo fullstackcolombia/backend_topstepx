@@ -1,10 +1,11 @@
 export const state = {
-  mode: process.env.PANEL_MODE || 'paper',
+  mode: process.env.PANEL_MODE || 'live',
   connection: {
     engine: 'ACTIVE',
     ws: 'CONNECTED',
     supabase: 'DISCONNECTED',
     topstepx: 'DISCONNECTED',
+    tradovate: 'DISCONNECTED',
     lastHeartbeat: null
   },
   risk: {
@@ -22,6 +23,7 @@ export const state = {
   positions: {},
   orders: [],
   logs: [],
+  esparPairs: [],
   strategyState: {
     coc: { armed: false, config: null },
     orb: { armed: false, config: null }
@@ -106,4 +108,14 @@ export function resetSync(accountIds) {
     }
   }
   appendLog('INFO', 'Account sync reset', { accountIds });
+}
+
+export function getEsparPairs() {
+  return state.esparPairs;
+}
+
+export function setEsparPairs(pairs) {
+  state.esparPairs = Array.isArray(pairs) ? pairs : [];
+  appendLog('INFO', 'ESPAR pairs updated', { totalPairs: state.esparPairs.length });
+  return state.esparPairs;
 }

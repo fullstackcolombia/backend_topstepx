@@ -53,9 +53,8 @@ export function assertRiskCanTrade(accounts, qty) {
   for (const accountId of accounts) {
     const account = findAccount(accountId);
     if (!account) {
-      const error = new Error(`Account not found: ${accountId}`);
-      error.statusCode = 404;
-      throw error;
+      // External broker account not mirrored in local state yet.
+      continue;
     }
     if (account.tradesToday >= state.risk.maxTradesDaily) {
       const error = new Error(`Max trades reached for account ${accountId}`);
@@ -79,6 +78,19 @@ export function executeManualOrder(orderPayload) {
 
   for (const accountId of orderPayload.accounts) {
     const account = findAccount(accountId);
+    if (!account) {
+      fills.push({
+        accountId,
+        side,
+        qty: orderPayload.qty,
+        fillPrice,
+        tradePnl: 0,
+        runningPnl: 0,
+        position: 0,
+        external: true
+      });
+      continue;
+    }
     fills.push(applyAccountPnlAndPosition(account, side, orderPayload.qty, fillPrice));
   }
 

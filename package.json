@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "node src/server.js",
     "start": "node src/server.js",
-    "check": "node --check src/server.js && node --check src/engine.js && node --check src/state.js && node --check src/topstepxAdapter.js && node --check src/validators.js && node --check src/marketSimulator.js && node --check src/supabaseClient.js && node --check src/persistence.js && node --check src/swagger.js"
+    "check": "node --check src/server.js && node --check src/engine.js && node --check src/state.js && node --check src/topstepxAdapter.js && node --check src/tradovateAdapter.js && node --check src/validators.js && node --check src/marketSimulator.js && node --check src/supabaseClient.js && node --check src/persistence.js && node --check src/swagger.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.54.0",

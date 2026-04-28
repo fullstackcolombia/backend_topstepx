@@ -18,10 +18,11 @@ import {
   syncReset
 } from './engine.js';
 import { tickMarket } from './marketSimulator.js';
-import { appendLog, getOverview, onLog, state } from './state.js';
+import { appendLog, getEsparPairs, getOverview, onLog, setEsparPairs, state } from './state.js';
 import {
   baseOrderSchema,
   cocSchema,
+  esparPairsSchema,
   orbSchema,
   parseOrThrow,
   reverseSchema,
@@ -29,6 +30,7 @@ import {
   simpleAccountsSchema
 } from './validators.js';
 import { TopstepxAdapter } from './topstepxAdapter.js';
+import { TradovateAdapter } from './tradovateAdapter.js';
 import { PersistenceService } from './persistence.js';
 import { registerSwagger } from './swagger.js';
 
@@ -36,6 +38,7 @@ const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 const adapter = new TopstepxAdapter();
+const tradovate = new TradovateAdapter();
 const persistence = new PersistenceService();
 
 const corsOrigins = String(process.env.CORS_ORIGINS || '')
@@ -152,6 +155,20 @@ app.get('/api/state/snapshot', (_req, res) => {
   ok(res, getSnapshot());
 });
 
+app.get('/api/espar/pairs', (_req, res) => {
+  ok(res, { pairs: getEsparPairs() });
+});
+
+app.post('/api/espar/pairs', (req, res, next) => {
+  try {
+    const payload = parseOrThrow(esparPairsSchema, req.body);
+    const saved = setEsparPairs(payload.pairs);
+    ok(res, { pairs: saved });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post('/api/risk/config', (req, res, next) => {
   try {
     const payload = parseOrThrow(riskSchema, req.body);
@@ -166,11 +183,135 @@ app.post('/api/risk/config', (req, res, next) => {
 app.post('/api/orders/manual', async (req, res, next) => {
   try {
     const payload = parseOrThrow(baseOrderSchema, req.body);
+    const broker = String(payload?.broker || (payload?.tradovateCredentials ? 'tradovate' : 'topstepx'));
+
+    let brokerResponse = null;
+    if (broker === 'tradovate') {
+      if (state.mode !== 'live') {
+        const error = new Error('Tradovate requires PANEL_MODE=live');
+        error.statusCode = 409;
+        throw error;
+      }
+
+      if (!payload?.tradovateCredentials) {
+        const error = new Error('Tradovate order requires tradovateCredentials');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      const tvEnv = String(payload?.tradovateCredentials?.environment || 'live').toLowerCase();
+      if (tvEnv !== 'live') {
+        const error = new Error('Tradovate live mode only: set credentials.environment="live"');
+        error.statusCode = 400;
+        throw error;
+      }
+
+      const action = payload.orderType.startsWith('BUY') ? 'Buy' : 'Sell';
+      const accountId = Number(payload.tradovateAccountId ?? payload.accounts?.[0]);
+      brokerResponse = await tradovate.placeOrderWithCreds(
+        {
+          action,
+          symbol: payload.instrument,
+          orderQty: payload.qty,
+          orderType: 'Market',
+          accountId: Number.isInteger(accountId) ? accountId : undefined,
+          accountSpec: payload.tradovateAccountSpec
+        },
+        payload.tradovateCredentials
+      );
+    } else {
+      brokerResponse = await adapter.sendOrder(payload);
+    }
+
     const execution = executeManualOrder(payload);
-    await adapter.sendOrder(payload);
-    ok(res, execution);
+    ok(res, { ...execution, broker, brokerResponse });
     broadcast({ type: 'order_executed', data: execution });
     persistence.persistTradeEvent(execution, payload.instrument);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/tradovate/accounts', async (req, res, next) => {
+  try {
+    if (state.mode !== 'live') {
+      const error = new Error('Tradovate requires PANEL_MODE=live');
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const payload = parseOrThrow(
+      z.object({
+        credentials: z.object({
+          name: z.string().min(1),
+          password: z.string().min(1),
+          appId: z.string().min(1),
+          appVersion: z.string().min(1),
+          cid: z.number().int().min(0),
+          sec: z.string().min(1),
+          environment: z.enum(['demo', 'live']).optional()
+        })
+      }),
+      req.body
+    );
+
+    const tvEnv = String(payload?.credentials?.environment || 'live').toLowerCase();
+    if (tvEnv !== 'live') {
+      const error = new Error('Tradovate live mode only: set credentials.environment="live"');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const accounts = await tradovate.listAccountsWithCreds(payload.credentials);
+    ok(res, { accounts });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/tradovate/chart', async (req, res, next) => {
+  try {
+    if (state.mode !== 'live') {
+      const error = new Error('Tradovate requires PANEL_MODE=live');
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const payload = parseOrThrow(
+      z.object({
+        credentials: z.object({
+          name: z.string().min(1),
+          password: z.string().min(1),
+          appId: z.string().min(1),
+          appVersion: z.string().min(1),
+          cid: z.number().int().min(0),
+          sec: z.string().min(1),
+          environment: z.enum(['demo', 'live']).optional()
+        }),
+        symbol: z.string().min(1),
+        asMuchAsElements: z.number().int().min(20).max(600).optional(),
+        elementSize: z.number().int().min(1).max(60).optional()
+      }),
+      req.body
+    );
+
+    const tvEnv = String(payload?.credentials?.environment || 'live').toLowerCase();
+    if (tvEnv !== 'live') {
+      const error = new Error('Tradovate live mode only: set credentials.environment="live"');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const chart = await tradovate.getChartWithCreds(
+      {
+        symbol: payload.symbol,
+        asMuchAsElements: payload.asMuchAsElements,
+        elementSize: payload.elementSize
+      },
+      payload.credentials
+    );
+
+    ok(res, chart);
   } catch (error) {
     next(error);
   }
@@ -317,7 +458,7 @@ setInterval(() => {
 
 const port = Number(process.env.PORT || 8787);
 
-Promise.all([adapter.connect(), persistence.initialize()]).finally(() => {
+Promise.all([adapter.connect(), tradovate.connect(), persistence.initialize()]).finally(() => {
   server.listen(port, () => {
     appendLog('INFO', `Server running on http://localhost:${port}`);
     console.log(`Panel TopstepX running on http://localhost:${port}`);

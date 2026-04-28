@@ -2,7 +2,7 @@ import { appendLog, state } from './state.js';
 
 export class TopstepxAdapter {
   constructor() {
-    this.mode = process.env.PANEL_MODE || 'paper';
+    this.mode = process.env.PANEL_MODE || 'live';
     this.apiBase = (process.env.TOPSTEPX_API_BASE || 'https://api.topstepx.com').replace(/\/$/, '');
     this.userName = process.env.TOPSTEPX_USER_NAME || process.env.TOPSTEPX_USERNAME || '';
     this.apiKey = process.env.TOPSTEPX_API_KEY || '';
@@ -13,6 +13,8 @@ export class TopstepxAdapter {
     this.contractCache = [];
     this.contractCacheAt = 0;
     this.contractCacheTtlMs = 60 * 1000;
+    // Per-credentials session cache: key = "userName::apiKeyHash", value = { token, lastAuthAt }
+    this.credentialSessions = new Map();
   }
 
   async connect() {
@@ -246,6 +248,10 @@ export class TopstepxAdapter {
   }
 
   async sendOrder(order) {
+    if (order?.topstepxCredentials) {
+      return this.sendOrderWithCreds(order, order.topstepxCredentials);
+    }
+
     if (this.mode !== 'live') {
       return {
         ok: true,
@@ -318,5 +324,127 @@ export class TopstepxAdapter {
       ok: true,
       flattened
     };
+  }
+
+  // ─── Per-credential helpers ──────────────────────────────────────────────────
+
+  _credKey(userName, apiKey) {
+    return `${String(userName)}::${String(apiKey)}`;
+  }
+
+  async authenticateWithCreds(userName, apiKey, force = false) {
+    const key = this._credKey(userName, apiKey);
+    const now = Date.now();
+    const cached = this.credentialSessions.get(key);
+
+    if (!force && cached?.token && now - cached.lastAuthAt < this.authCooldownMs) {
+      return cached.token;
+    }
+
+    const response = await fetch(`${this.apiBase}/api/Auth/loginKey`, {
+      method: 'POST',
+      headers: {
+        Accept: 'text/plain',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ userName, apiKey })
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`TopstepX loginKey rejected for ${userName}: ${response.status} ${text}`);
+    }
+
+    const payload = await response.json();
+    if (!payload?.success || !payload?.token) {
+      const message = payload?.errorMessage || 'Missing token in loginKey response';
+      throw new Error(`TopstepX loginKey failed for ${userName}: ${message}`);
+    }
+
+    this.credentialSessions.set(key, { token: payload.token, lastAuthAt: now });
+    appendLog('INFO', `TopstepX session established for account: ${userName}`);
+    return payload.token;
+  }
+
+  async requestWithCreds(path, body, creds, retryOnUnauthorized = true) {
+    const token = await this.authenticateWithCreds(creds.userName, creds.apiKey);
+
+    const response = await fetch(`${this.apiBase}${path}`, {
+      method: 'POST',
+      headers: {
+        Accept: 'text/plain',
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify(body || {})
+    });
+
+    if (response.status === 401 && retryOnUnauthorized) {
+      await this.authenticateWithCreds(creds.userName, creds.apiKey, true);
+      return this.requestWithCreds(path, body, creds, false);
+    }
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`TopstepX request failed ${path}: ${response.status} ${text}`);
+    }
+
+    const payload = await response.json();
+    if (payload && Object.prototype.hasOwnProperty.call(payload, 'success') && !payload.success) {
+      const code = Number(payload?.errorCode ?? -1);
+      const message = payload?.errorMessage || `Gateway error at ${path}`;
+      throw new Error(`TopstepX request failed ${path} (errorCode=${code}): ${message}`);
+    }
+
+    return payload;
+  }
+
+  async sendOrderWithCreds(order, creds) {
+    const accountIds = (order?.accounts || [])
+      .map((account) => this.parseAccountId(account))
+      .filter((accountId) => Number.isInteger(accountId));
+
+    if (accountIds.length === 0 && Number.isInteger(order?.accountId)) {
+      accountIds.push(order.accountId);
+    }
+
+    if (accountIds.length === 0) {
+      throw new Error('TopstepX order needs at least one numeric accountId');
+    }
+
+    // Resolve contractId using per-creds request
+    let contractId;
+    try {
+      contractId = await this.resolveContractId(order?.instrument, order?.contractId);
+    } catch (_err) {
+      // Fallback: fetch contracts using the provided credentials
+      const contractsRes = await this.requestWithCreds('/api/Contract/available', { live: true }, creds);
+      const contracts = Array.isArray(contractsRes?.contracts) ? contractsRes.contracts : [];
+      const query = this.normalizeText(order?.instrument);
+      const match = contracts.find((contract) => {
+        const id = this.normalizeText(contract.id);
+        const name = this.normalizeText(contract.name);
+        const symbolId = this.normalizeText(contract.symbolId);
+        return id === query || name === query || symbolId === query;
+      });
+      if (!match) {
+        throw new Error(`TopstepX contract not found for instrument "${order?.instrument}"`);
+      }
+      contractId = String(match.id);
+    }
+
+    const responses = [];
+    for (const accountId of accountIds) {
+      const placeOrderPayload = this.mapOrderToPlaceOrder(order, accountId, contractId);
+      const response = await this.requestWithCreds('/api/Order/place', placeOrderPayload, creds);
+      responses.push({
+        accountId,
+        ...response,
+        externalOrderId: response?.orderId || null
+      });
+    }
+
+    const first = responses[0];
+    return { ...first, accountResponses: responses };
   }
 }
