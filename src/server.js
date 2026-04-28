@@ -232,6 +232,31 @@ app.post('/api/orders/manual', async (req, res, next) => {
   }
 });
 
+app.post('/api/topstepx/accounts', async (req, res, next) => {
+  try {
+    if (state.mode !== 'live') {
+      const error = new Error('TopstepX requires PANEL_MODE=live');
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const payload = parseOrThrow(
+      z.object({
+        credentials: z.object({
+          userName: z.string().min(1),
+          apiKey: z.string().min(8)
+        })
+      }),
+      req.body
+    );
+
+    const result = await adapter.requestWithCreds('/api/Account/search', { onlyActiveAccounts: true }, payload.credentials);
+    ok(res, { accounts: Array.isArray(result?.accounts) ? result.accounts : [] });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post('/api/tradovate/accounts', async (req, res, next) => {
   try {
     if (state.mode !== 'live') {
