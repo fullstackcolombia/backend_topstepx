@@ -440,6 +440,104 @@ export class TopstepxAdapter {
     return String(match.id);
   }
 
+  async resolveChartContractCandidatesWithCreds(instrument, explicitContractId, creds) {
+    if (explicitContractId && typeof explicitContractId === 'string') {
+      return [String(explicitContractId)];
+    }
+
+    const mapRaw = process.env.TOPSTEPX_CONTRACT_MAP || '{}';
+    let map = {};
+    try {
+      map = JSON.parse(mapRaw);
+    } catch (_error) {
+      map = {};
+    }
+
+    const candidates = [];
+    if (instrument && map[instrument]) {
+      candidates.push(String(map[instrument]));
+    }
+
+    const query = this.normalizeText(instrument);
+    const leadToken = query.split(/\s+/)[0] || query;
+
+    const allContracts = [];
+    try {
+      const search = await this.requestWithCreds('/api/Contract/search', { searchText: instrument, live: true }, creds);
+      if (Array.isArray(search?.contracts)) {
+        allContracts.push(...search.contracts);
+      }
+    } catch (_error) {
+      // keep fallback paths
+    }
+
+    try {
+      const searchLead = await this.requestWithCreds('/api/Contract/search', { searchText: leadToken, live: true }, creds);
+      if (Array.isArray(searchLead?.contracts)) {
+        allContracts.push(...searchLead.contracts);
+      }
+    } catch (_error) {
+      // keep fallback paths
+    }
+
+    try {
+      const available = await this.requestWithCreds('/api/Contract/available', { live: true }, creds);
+      if (Array.isArray(available?.contracts)) {
+        allContracts.push(...available.contracts);
+      }
+    } catch (_error) {
+      // keep fallback paths
+    }
+
+    const scored = [];
+    for (const contract of allContracts) {
+      const id = String(contract?.id || '').trim();
+      if (!id) {
+        continue;
+      }
+
+      const name = this.normalizeText(contract?.name);
+      const symbolId = this.normalizeText(contract?.symbolId);
+      const description = this.normalizeText(contract?.description);
+      let score = 0;
+
+      if (query && (name === query || symbolId === query || description === query || id === query)) {
+        score += 100;
+      }
+      if (query && (name.includes(query) || symbolId.includes(query) || description.includes(query))) {
+        score += 40;
+      }
+      if (leadToken && (name.includes(leadToken) || symbolId.includes(leadToken) || description.includes(leadToken))) {
+        score += 20;
+      }
+      if (contract?.activeContract === true) {
+        score += 30;
+      }
+
+      scored.push({ id, score });
+    }
+
+    scored.sort((a, b) => b.score - a.score);
+    for (const item of scored) {
+      candidates.push(item.id);
+    }
+
+    const unique = [];
+    const seen = new Set();
+    for (const id of candidates) {
+      if (!seen.has(id)) {
+        seen.add(id);
+        unique.push(id);
+      }
+    }
+
+    if (unique.length === 0) {
+      throw new Error(`TopstepX contract not found for symbol "${instrument}".`);
+    }
+
+    return unique.slice(0, 5);
+  }
+
   async requestChartWithCreds(chartPath, body, creds) {
     if (String(chartPath).toLowerCase().includes('/api/history/retrievebars')) {
       const variants = this.buildRetrieveBarsVariants(body);
@@ -481,7 +579,7 @@ export class TopstepxAdapter {
       throw new Error('TopstepX chart requires symbol');
     }
 
-    const contractId = await this.resolveContractIdWithCreds(symbol, request?.contractId, creds);
+    const contractIds = await this.resolveChartContractCandidatesWithCreds(symbol, request?.contractId, creds);
     const cacheKey = `${creds.userName}::${symbol}::${request?.elementSize || 1}::${request?.asMuchAsElements || 160}`;
     const now = Date.now();
 
@@ -495,35 +593,37 @@ export class TopstepxAdapter {
       return cached.chart;
     }
 
-    const chartPaths = this.chartEndpointCandidates();
-    const bodies = this.buildChartRequestBodies({
-      symbol,
-      contractId,
-      asMuchAsElements: request?.asMuchAsElements,
-      elementSize: request?.elementSize
-    });
-
     const errors = [];
-    for (const chartPath of chartPaths) {
-      const pathKey = String(chartPath || '').toLowerCase();
-      const pathBodies = pathKey.includes('/api/history/retrievebars') ? bodies.slice(0, 1) : bodies;
-      for (const body of pathBodies) {
-        try {
-          const candles = await this.requestChartWithCreds(chartPath, body, creds);
-          if (candles.length > 0) {
-            const chart = {
-              symbol,
-              contractId,
-              source: 'topstepx',
-              endpoint: chartPath,
-              candles
-            };
-            this.chartCache.set(cacheKey, { at: now, chart });
-            this.chartBackoffUntil.delete(cacheKey);
-            return chart;
+    for (const contractId of contractIds) {
+      const chartPaths = this.chartEndpointCandidates();
+      const bodies = this.buildChartRequestBodies({
+        symbol,
+        contractId,
+        asMuchAsElements: request?.asMuchAsElements,
+        elementSize: request?.elementSize
+      });
+
+      for (const chartPath of chartPaths) {
+        const pathKey = String(chartPath || '').toLowerCase();
+        const pathBodies = pathKey.includes('/api/history/retrievebars') ? bodies.slice(0, 1) : bodies;
+        for (const body of pathBodies) {
+          try {
+            const candles = await this.requestChartWithCreds(chartPath, body, creds);
+            if (candles.length > 0) {
+              const chart = {
+                symbol,
+                contractId,
+                source: 'topstepx',
+                endpoint: chartPath,
+                candles
+              };
+              this.chartCache.set(cacheKey, { at: now, chart });
+              this.chartBackoffUntil.delete(cacheKey);
+              return chart;
+            }
+          } catch (error) {
+            errors.push(`${chartPath}:${contractId}: ${error.message}`);
           }
-        } catch (error) {
-          errors.push(`${chartPath}: ${error.message}`);
         }
       }
     }
