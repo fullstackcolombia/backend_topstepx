@@ -27,6 +27,10 @@ export class TopstepxAdapter {
     this.contractCache = [];
     this.contractCacheAt = 0;
     this.contractCacheTtlMs = 60 * 1000;
+    this.chartCache = new Map();
+    this.chartCacheTtlMs = 4 * 1000;
+    this.chartBackoffUntil = new Map();
+    this.chartBackoffMs = 30 * 1000;
     // Per-credentials session cache: key = "userName::apiKeyHash", value = { token, lastAuthAt }
     this.credentialSessions = new Map();
   }
@@ -70,6 +74,8 @@ export class TopstepxAdapter {
       this.lastAuthAt = 0;
       this.contractCache = [];
       this.contractCacheAt = 0;
+      this.chartCache.clear();
+      this.chartBackoffUntil.clear();
     }
   }
 
@@ -376,7 +382,7 @@ export class TopstepxAdapter {
     const startTime = new Date(now - barMs * (limit + 20)).toISOString();
     const endTime = new Date(now).toISOString();
 
-    const unitCandidates = isSeconds ? [0, 1, 'Second', 'Seconds'] : [1, 2, 'Minute', 'Minutes'];
+    const unitCandidates = isSeconds ? [1, 'Second'] : [2, 'Minute'];
     const variants = [];
 
     for (const unit of unitCandidates) {
@@ -392,9 +398,8 @@ export class TopstepxAdapter {
       };
 
       // Different TopstepX gateway deployments bind retrieveBars in different shapes.
-      variants.push(corePayload);
       variants.push({ request: corePayload });
-      variants.push({ ...corePayload, request: corePayload });
+      variants.push(corePayload);
     }
 
     return variants;
@@ -458,36 +463,6 @@ export class TopstepxAdapter {
         }
       }
 
-      for (const variant of variants) {
-        try {
-          const payload = await this.requestWithCreds(chartPath, null, creds, true, {
-            method: 'GET',
-            query: variant
-          });
-          const bars = this.parseBarsFromChartPayload(payload);
-          if (bars.length > 0) {
-            return this.normalizeChartBars(bars);
-          }
-        } catch (error) {
-          variantErrors.push(error.message);
-        }
-
-        try {
-          const payload = await this.requestWithCreds(chartPath, null, creds, true, {
-            method: 'GET',
-            query: {
-              request: JSON.stringify(variant)
-            }
-          });
-          const bars = this.parseBarsFromChartPayload(payload);
-          if (bars.length > 0) {
-            return this.normalizeChartBars(bars);
-          }
-        } catch (error) {
-          variantErrors.push(error.message);
-        }
-      }
-
       const short = variantErrors.slice(0, 2).join(' | ');
       throw new Error(short || 'retrieveBars returned no candles');
     }
@@ -513,6 +488,19 @@ export class TopstepxAdapter {
     }
 
     const contractId = await this.resolveContractIdWithCreds(symbol, request?.contractId, creds);
+    const cacheKey = `${creds.userName}::${symbol}::${request?.elementSize || 1}::${request?.asMuchAsElements || 160}`;
+    const now = Date.now();
+
+    const cached = this.chartCache.get(cacheKey);
+    if (cached && now - cached.at < this.chartCacheTtlMs) {
+      return cached.chart;
+    }
+
+    const blockedUntil = Number(this.chartBackoffUntil.get(cacheKey) || 0);
+    if (blockedUntil > now && cached?.chart?.candles?.length > 0) {
+      return cached.chart;
+    }
+
     const chartPaths = this.chartEndpointCandidates();
     const bodies = this.buildChartRequestBodies({
       symbol,
@@ -527,17 +515,28 @@ export class TopstepxAdapter {
         try {
           const candles = await this.requestChartWithCreds(chartPath, body, creds);
           if (candles.length > 0) {
-            return {
+            const chart = {
               symbol,
               contractId,
               source: 'topstepx',
               endpoint: chartPath,
               candles
             };
+            this.chartCache.set(cacheKey, { at: now, chart });
+            this.chartBackoffUntil.delete(cacheKey);
+            return chart;
           }
         } catch (error) {
           errors.push(`${chartPath}: ${error.message}`);
         }
+      }
+    }
+
+    const mergedErrors = errors.join(' | ');
+    if (mergedErrors.includes(' 429') || mergedErrors.includes(': 429')) {
+      this.chartBackoffUntil.set(cacheKey, now + this.chartBackoffMs);
+      if (cached?.chart?.candles?.length > 0) {
+        return cached.chart;
       }
     }
 
