@@ -231,6 +231,53 @@ export class TopstepxAdapter {
       .toUpperCase();
   }
 
+  extractContractIdPrefix(candidateIds = []) {
+    for (const id of candidateIds) {
+      const value = String(id || '').trim();
+      const marker = value.lastIndexOf('.');
+      if (marker > 0) {
+        return value.slice(0, marker + 1);
+      }
+    }
+    return 'CON.F.US.';
+  }
+
+  deriveContractIdsFromInstrument(instrument, candidateIds = []) {
+    const raw = this.normalizeText(instrument).replace(/\s+/g, ' ').trim();
+    const match = raw.match(/^([A-Z]{1,4})\s+([A-Z]{3})(\d{2})$/);
+    if (!match) {
+      return [];
+    }
+
+    const [, root, monthTxt, yy] = match;
+    const monthCodeByText = {
+      JAN: 'F',
+      FEB: 'G',
+      MAR: 'H',
+      APR: 'J',
+      MAY: 'K',
+      JUN: 'M',
+      JUL: 'N',
+      AUG: 'Q',
+      SEP: 'U',
+      OCT: 'V',
+      NOV: 'X',
+      DEC: 'Z'
+    };
+
+    const monthCode = monthCodeByText[monthTxt];
+    if (!monthCode) {
+      return [];
+    }
+
+    const suffix = `${root}${monthCode}${yy}`;
+    const prefix = this.extractContractIdPrefix(candidateIds);
+    return [
+      `${prefix}${suffix}`,
+      suffix
+    ];
+  }
+
   chartEndpointCandidates() {
     const configured = String(process.env.TOPSTEPX_CHART_ENDPOINTS || '').trim();
     if (configured) {
@@ -527,6 +574,11 @@ export class TopstepxAdapter {
     scored.sort((a, b) => b.score - a.score);
     for (const item of scored) {
       candidates.push(item.id);
+    }
+
+    const derived = this.deriveContractIdsFromInstrument(instrument, candidates);
+    for (const id of derived) {
+      candidates.push(id);
     }
 
     const unique = [];
