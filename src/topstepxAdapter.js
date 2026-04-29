@@ -369,37 +369,36 @@ export class TopstepxAdapter {
   }
 
   buildRetrieveBarsVariants(body) {
-    const symbol = String(body?.symbol || '').trim();
     const contractId = String(body?.contractId || '').trim();
-    const limit = Math.max(20, Math.min(600, Number(body?.limit || body?.asMuchAsElements || 160)));
+    const limit = Math.max(60, Math.min(600, Number(body?.limit || body?.asMuchAsElements || 160)));
 
     const rawUnit = String(body?.unit || '').toLowerCase();
-    const unitNumber = Math.max(1, Number(body?.unitNumber || 1));
-    const isSeconds = rawUnit.includes('sec') || (!rawUnit.includes('min') && unitNumber < 60);
+    const requestedUnitNumber = Math.max(1, Number(body?.unitNumber || 1));
+    const isSeconds = rawUnit.includes('sec');
+
+    // TopstepX retrieveBars commonly accepts minute bars. Force minute to avoid enum conversion failures.
+    const unitNumber = isSeconds ? Math.max(1, Math.ceil(requestedUnitNumber / 60)) : requestedUnitNumber;
 
     const barMs = (isSeconds ? 1000 : 60_000) * unitNumber;
     const now = Date.now();
     const startTime = new Date(now - barMs * (limit + 20)).toISOString();
     const endTime = new Date(now).toISOString();
 
-    const unitCandidates = isSeconds ? [1, 'Second'] : [2, 'Minute'];
+    const unitCandidates = ['Minute', 'Minutes', 2, 1];
     const variants = [];
 
     for (const unit of unitCandidates) {
       const corePayload = {
         contractId,
         live: true,
-        symbol,
         startTime,
         endTime,
         unit,
-        unitNumber,
-        limit
+        unitNumber
       };
 
-      // Different TopstepX gateway deployments bind retrieveBars in different shapes.
+      // API error explicitly requires the root request field.
       variants.push({ request: corePayload });
-      variants.push(corePayload);
     }
 
     return variants;
@@ -511,7 +510,9 @@ export class TopstepxAdapter {
 
     const errors = [];
     for (const chartPath of chartPaths) {
-      for (const body of bodies) {
+      const pathKey = String(chartPath || '').toLowerCase();
+      const pathBodies = pathKey.includes('/api/history/retrievebars') ? bodies.slice(0, 1) : bodies;
+      for (const body of pathBodies) {
         try {
           const candles = await this.requestChartWithCreds(chartPath, body, creds);
           if (candles.length > 0) {
