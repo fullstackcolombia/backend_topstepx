@@ -240,13 +240,7 @@ export class TopstepxAdapter {
         .filter(Boolean);
     }
 
-    return [
-      '/api/History/retrieveBars',
-      '/api/History/getBars',
-      '/api/Chart/getChart',
-      '/api/Quote/getBars',
-      '/api/MarketData/retrieveBars'
-    ];
+    return ['/api/History/retrieveBars'];
   }
 
   async parseJsonOrThrow(response, contextLabel) {
@@ -296,7 +290,7 @@ export class TopstepxAdapter {
     const byTimestamp = new Map();
     for (const bar of rawBars) {
       const rawTs =
-        bar?.timestamp || bar?.ts || bar?.time || bar?.startTime || bar?.startTimestamp || bar?.date;
+        bar?.t || bar?.timestamp || bar?.ts || bar?.time || bar?.startTime || bar?.startTimestamp || bar?.date;
       if (!rawTs) {
         continue;
       }
@@ -375,16 +369,15 @@ export class TopstepxAdapter {
     const rawUnit = String(body?.unit || '').toLowerCase();
     const requestedUnitNumber = Math.max(1, Number(body?.unitNumber || 1));
     const isSeconds = rawUnit.includes('sec');
-
-    // TopstepX retrieveBars commonly accepts minute bars. Force minute to avoid enum conversion failures.
-    const unitNumber = isSeconds ? Math.max(1, Math.ceil(requestedUnitNumber / 60)) : requestedUnitNumber;
+    const unitNumber = requestedUnitNumber;
 
     const barMs = (isSeconds ? 1000 : 60_000) * unitNumber;
     const now = Date.now();
     const startTime = new Date(now - barMs * (limit + 20)).toISOString();
     const endTime = new Date(now).toISOString();
 
-    const unitCandidates = ['Minute', 'Minutes', 2, 1];
+    // AggregateBarUnit enum from Swagger: 1=Second, 2=Minute.
+    const unitCandidates = isSeconds ? [1, 2] : [2, 1];
     const variants = [];
 
     for (const unit of unitCandidates) {
@@ -394,11 +387,13 @@ export class TopstepxAdapter {
         startTime,
         endTime,
         unit,
-        unitNumber
+        unitNumber,
+        limit,
+        includePartialBar: false
       };
 
-      // API error explicitly requires the root request field.
-      variants.push({ request: corePayload });
+      // Swagger describes RetrieveBarRequest as the direct body schema.
+      variants.push(corePayload);
     }
 
     return variants;
