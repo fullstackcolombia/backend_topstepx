@@ -1,5 +1,19 @@
 import { appendLog, state } from './state.js';
 
+function toQuery(params = {}) {
+  const entries = Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== '');
+  if (entries.length === 0) {
+    return '';
+  }
+
+  const search = new URLSearchParams();
+  for (const [key, value] of entries) {
+    search.append(key, String(value));
+  }
+
+  return `?${search.toString()}`;
+}
+
 export class TopstepxAdapter {
   constructor() {
     this.mode = process.env.PANEL_MODE || 'live';
@@ -107,7 +121,7 @@ export class TopstepxAdapter {
       throw new Error(`TopstepX loginKey rejected: ${response.status} ${text}`);
     }
 
-    const payload = await response.json();
+    const payload = await this.parseJsonOrThrow(response, 'TopstepX loginKey');
     if (!payload?.success || !payload?.token) {
       const message = payload?.errorMessage || 'Missing token in loginKey response';
       const code = Number(payload?.errorCode ?? -1);
@@ -168,7 +182,7 @@ export class TopstepxAdapter {
       throw new Error(`TopstepX request failed ${path}: ${response.status} ${text}`);
     }
 
-    const payload = await response.json();
+    const payload = await this.parseJsonOrThrow(response, `TopstepX request ${path}`);
     if (payload && Object.prototype.hasOwnProperty.call(payload, 'success') && !payload.success) {
       const code = Number(payload?.errorCode ?? -1);
       const message = payload?.errorMessage || `Gateway error at ${path}`;
@@ -220,11 +234,37 @@ export class TopstepxAdapter {
         .filter(Boolean);
     }
 
-    return ['/api/History/retrieveBars', '/api/Chart/getChart', '/api/Quote/getBars'];
+    return [
+      '/api/History/retrieveBars',
+      '/api/History/getBars',
+      '/api/Chart/getChart',
+      '/api/Quote/getBars',
+      '/api/MarketData/retrieveBars'
+    ];
+  }
+
+  async parseJsonOrThrow(response, contextLabel) {
+    const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+    const raw = await response.text();
+    const trimmed = raw.trim();
+    const looksJson = trimmed.startsWith('{') || trimmed.startsWith('[');
+
+    if (!contentType.includes('application/json') && !looksJson) {
+      const sample = trimmed.slice(0, 120).replace(/\s+/g, ' ');
+      throw new Error(`${contextLabel}: non-JSON response (${response.status}) ${sample}`);
+    }
+
+    try {
+      return JSON.parse(raw);
+    } catch (_error) {
+      const sample = trimmed.slice(0, 120).replace(/\s+/g, ' ');
+      throw new Error(`${contextLabel}: invalid JSON (${response.status}) ${sample}`);
+    }
   }
 
   parseBarsFromChartPayload(payload) {
     const candidates = [
+      Array.isArray(payload) ? payload : null,
       payload?.bars,
       payload?.candles,
       payload?.history,
@@ -322,6 +362,41 @@ export class TopstepxAdapter {
     ];
   }
 
+  buildRetrieveBarsVariants(body) {
+    const symbol = String(body?.symbol || '').trim();
+    const contractId = String(body?.contractId || '').trim();
+    const limit = Math.max(20, Math.min(600, Number(body?.limit || body?.asMuchAsElements || 160)));
+
+    const rawUnit = String(body?.unit || '').toLowerCase();
+    const unitNumber = Math.max(1, Number(body?.unitNumber || 1));
+    const isSeconds = rawUnit.includes('sec') || (!rawUnit.includes('min') && unitNumber < 60);
+
+    const barMs = (isSeconds ? 1000 : 60_000) * unitNumber;
+    const now = Date.now();
+    const startTime = new Date(now - barMs * (limit + 20)).toISOString();
+    const endTime = new Date(now).toISOString();
+
+    const unitCandidates = isSeconds ? [0, 1, 'Second', 'Seconds'] : [1, 2, 'Minute', 'Minutes'];
+    const variants = [];
+
+    for (const unit of unitCandidates) {
+      const requestPayload = {
+        contractId,
+        symbol,
+        startTime,
+        endTime,
+        unit,
+        unitNumber,
+        limit
+      };
+
+      variants.push({ request: requestPayload });
+      variants.push(requestPayload);
+    }
+
+    return variants;
+  }
+
   async resolveContractIdWithCreds(instrument, explicitContractId, creds) {
     if (explicitContractId && typeof explicitContractId === 'string') {
       return explicitContractId;
@@ -364,8 +439,37 @@ export class TopstepxAdapter {
   }
 
   async requestChartWithCreds(chartPath, body, creds) {
-    const payload = await this.requestWithCreds(chartPath, body, creds);
-    const bars = this.parseBarsFromChartPayload(payload);
+    if (String(chartPath).toLowerCase().includes('/api/history/retrievebars')) {
+      const variants = this.buildRetrieveBarsVariants(body);
+      const variantErrors = [];
+
+      for (const variant of variants) {
+        try {
+          const payload = await this.requestWithCreds(chartPath, variant, creds, true, { method: 'POST' });
+          const bars = this.parseBarsFromChartPayload(payload);
+          if (bars.length > 0) {
+            return this.normalizeChartBars(bars);
+          }
+        } catch (error) {
+          variantErrors.push(error.message);
+        }
+      }
+
+      const short = variantErrors.slice(0, 2).join(' | ');
+      throw new Error(short || 'retrieveBars returned no candles');
+    }
+
+    const postPayload = await this.requestWithCreds(chartPath, body, creds, true, { method: 'POST' });
+    let bars = this.parseBarsFromChartPayload(postPayload);
+    if (bars.length > 0) {
+      return this.normalizeChartBars(bars);
+    }
+
+    const getPayload = await this.requestWithCreds(chartPath, body, creds, true, {
+      method: 'GET',
+      query: body
+    });
+    bars = this.parseBarsFromChartPayload(getPayload);
     return this.normalizeChartBars(bars);
   }
 
@@ -608,7 +712,7 @@ export class TopstepxAdapter {
       throw new Error(`TopstepX loginKey rejected for ${userName}: ${response.status} ${text}`);
     }
 
-    const payload = await response.json();
+    const payload = await this.parseJsonOrThrow(response, `TopstepX loginKey ${userName}`);
     if (!payload?.success || !payload?.token) {
       const message = payload?.errorMessage || 'Missing token in loginKey response';
       throw new Error(`TopstepX loginKey failed for ${userName}: ${message}`);
@@ -619,22 +723,25 @@ export class TopstepxAdapter {
     return payload.token;
   }
 
-  async requestWithCreds(path, body, creds, retryOnUnauthorized = true) {
+  async requestWithCreds(path, body, creds, retryOnUnauthorized = true, options = {}) {
     const token = await this.authenticateWithCreds(creds.userName, creds.apiKey);
+    const method = String(options?.method || 'POST').toUpperCase();
+    const query = options?.query || null;
+    const endpoint = `${this.apiBase}${path}${method === 'GET' ? toQuery(query || {}) : ''}`;
 
-    const response = await fetch(`${this.apiBase}${path}`, {
-      method: 'POST',
+    const response = await fetch(endpoint, {
+      method,
       headers: {
-        Accept: 'text/plain',
+        Accept: 'application/json, text/plain;q=0.9, */*;q=0.8',
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`
       },
-      body: JSON.stringify(body || {})
+      ...(method === 'GET' ? {} : { body: JSON.stringify(body || {}) })
     });
 
     if (response.status === 401 && retryOnUnauthorized) {
       await this.authenticateWithCreds(creds.userName, creds.apiKey, true);
-      return this.requestWithCreds(path, body, creds, false);
+      return this.requestWithCreds(path, body, creds, false, options);
     }
 
     if (!response.ok) {
@@ -642,7 +749,7 @@ export class TopstepxAdapter {
       throw new Error(`TopstepX request failed ${path}: ${response.status} ${text}`);
     }
 
-    const payload = await response.json();
+    const payload = await this.parseJsonOrThrow(response, `TopstepX request ${path}`);
     if (payload && Object.prototype.hasOwnProperty.call(payload, 'success') && !payload.success) {
       const code = Number(payload?.errorCode ?? -1);
       const message = payload?.errorMessage || `Gateway error at ${path}`;
