@@ -257,6 +257,72 @@ app.post('/api/topstepx/accounts', async (req, res, next) => {
   }
 });
 
+app.post('/api/topstepx/connect', async (req, res, next) => {
+  try {
+    if (state.mode !== 'live') {
+      const error = new Error('TopstepX requires PANEL_MODE=live');
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const payload = parseOrThrow(
+      z.object({
+        credentials: z.object({
+          userName: z.string().min(1),
+          apiKey: z.string().min(8)
+        })
+      }),
+      req.body
+    );
+
+    const result = await adapter.connectWithRuntimeCredentials(payload.credentials);
+    ok(res, result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/topstepx/chart', async (req, res, next) => {
+  try {
+    if (state.mode !== 'live') {
+      const error = new Error('TopstepX requires PANEL_MODE=live');
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const payload = parseOrThrow(
+      z.object({
+        credentials: z
+          .object({
+            userName: z.string().min(1),
+            apiKey: z.string().min(8)
+          })
+          .optional(),
+        symbol: z.string().min(1),
+        contractId: z.string().min(1).optional(),
+        asMuchAsElements: z.number().int().min(20).max(600).optional(),
+        elementSize: z.number().int().min(1).max(60).optional()
+      }),
+      req.body
+    );
+
+    const chartRequest = {
+      symbol: payload.symbol,
+      contractId: payload.contractId,
+      asMuchAsElements: payload.asMuchAsElements,
+      elementSize: payload.elementSize
+    };
+
+    const chart = payload.credentials
+      ? await adapter.getChartWithCreds(chartRequest, payload.credentials)
+      : await adapter.getChart(chartRequest);
+
+    ok(res, chart);
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post('/api/tradovate/accounts', async (req, res, next) => {
   try {
     if (state.mode !== 'live') {

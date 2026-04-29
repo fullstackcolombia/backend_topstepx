@@ -24,6 +24,8 @@ panel topstepx
 - `TOPSTEPX_CONTRACT_MAP` es opcional y permite mapear instrumento del panel a `contractId` real. Ejemplo: `{"NQ SEP26":"CON.F.US.NQZ26"}`.
 - El backend inicia sesion en `/api/Auth/loginKey`, guarda el `token` de sesion y lo usa como `Authorization: Bearer <token>` para las llamadas a la Gateway API.
 - En `live`, el backend sincroniza cuentas con `/api/Account/search` para que el panel use IDs reales de TopstepX.
+- Nuevo endpoint `POST /api/topstepx/chart` devuelve velas reales de TopstepX para un `symbol` (y opcional `contractId`).
+- Puedes forzar/ajustar endpoints de chart con `TOPSTEPX_CHART_ENDPOINTS` (lista separada por comas). Ejemplo: `/api/History/retrieveBars,/api/Chart/getChart`.
 
 ## Tradovate integration
 
@@ -44,6 +46,7 @@ Nuevos endpoints para ESPAR mixto:
 
 - `POST /api/tradovate/accounts` conecta con credenciales y devuelve cuentas.
 - `POST /api/tradovate/chart` obtiene velas via `md/getchart`.
+- `POST /api/topstepx/chart` obtiene velas reales de TopstepX (con credenciales por request o por env del backend).
 - `POST /api/orders/manual` soporta `broker: "tradovate"` y envía orden market en Tradovate.
 
 Notas live-only:
