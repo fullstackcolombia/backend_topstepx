@@ -380,8 +380,9 @@ export class TopstepxAdapter {
     const variants = [];
 
     for (const unit of unitCandidates) {
-      const requestPayload = {
+      const corePayload = {
         contractId,
+        live: true,
         symbol,
         startTime,
         endTime,
@@ -390,8 +391,10 @@ export class TopstepxAdapter {
         limit
       };
 
-      variants.push({ request: requestPayload });
-      variants.push(requestPayload);
+      // Different TopstepX gateway deployments bind retrieveBars in different shapes.
+      variants.push(corePayload);
+      variants.push({ request: corePayload });
+      variants.push({ ...corePayload, request: corePayload });
     }
 
     return variants;
@@ -446,6 +449,36 @@ export class TopstepxAdapter {
       for (const variant of variants) {
         try {
           const payload = await this.requestWithCreds(chartPath, variant, creds, true, { method: 'POST' });
+          const bars = this.parseBarsFromChartPayload(payload);
+          if (bars.length > 0) {
+            return this.normalizeChartBars(bars);
+          }
+        } catch (error) {
+          variantErrors.push(error.message);
+        }
+      }
+
+      for (const variant of variants) {
+        try {
+          const payload = await this.requestWithCreds(chartPath, null, creds, true, {
+            method: 'GET',
+            query: variant
+          });
+          const bars = this.parseBarsFromChartPayload(payload);
+          if (bars.length > 0) {
+            return this.normalizeChartBars(bars);
+          }
+        } catch (error) {
+          variantErrors.push(error.message);
+        }
+
+        try {
+          const payload = await this.requestWithCreds(chartPath, null, creds, true, {
+            method: 'GET',
+            query: {
+              request: JSON.stringify(variant)
+            }
+          });
           const bars = this.parseBarsFromChartPayload(payload);
           if (bars.length > 0) {
             return this.normalizeChartBars(bars);
