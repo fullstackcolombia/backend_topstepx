@@ -378,22 +378,25 @@ export class TopstepxAdapter {
 
     // AggregateBarUnit enum from Swagger: 1=Second, 2=Minute.
     const unitCandidates = isSeconds ? [1, 2] : [2, 1];
+    const liveCandidates = [true, false];
     const variants = [];
 
     for (const unit of unitCandidates) {
-      const corePayload = {
-        contractId,
-        live: true,
-        startTime,
-        endTime,
-        unit,
-        unitNumber,
-        limit,
-        includePartialBar: false
-      };
+      for (const live of liveCandidates) {
+        const corePayload = {
+          contractId,
+          live,
+          startTime,
+          endTime,
+          unit,
+          unitNumber,
+          limit,
+          includePartialBar: false
+        };
 
-      // Swagger describes RetrieveBarRequest as the direct body schema.
-      variants.push(corePayload);
+        // Swagger describes RetrieveBarRequest as the direct body schema.
+        variants.push(corePayload);
+      }
     }
 
     return variants;
@@ -492,6 +495,7 @@ export class TopstepxAdapter {
     const scored = [];
     for (const contract of allContracts) {
       const id = String(contract?.id || '').trim();
+      const altId = String(contract?.symbolId || '').trim();
       if (!id) {
         continue;
       }
@@ -515,6 +519,9 @@ export class TopstepxAdapter {
       }
 
       scored.push({ id, score });
+      if (altId) {
+        scored.push({ id: altId, score: score - 5 });
+      }
     }
 
     scored.sort((a, b) => b.score - a.score);
