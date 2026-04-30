@@ -340,10 +340,10 @@ app.post('/api/tradovate/accounts', async (req, res, next) => {
         credentials: z.object({
           name: z.string().min(1),
           password: z.string().min(1),
-          appId: z.string().min(1),
-          appVersion: z.string().min(1),
-          cid: z.number().int().min(0),
-          sec: z.string().min(1),
+          appId: z.string().min(1).optional(),
+          appVersion: z.string().min(1).optional(),
+          cid: z.number().int().min(0).optional(),
+          sec: z.string().min(1).optional(),
           environment: z.enum(['demo', 'live']).optional()
         })
       }),
@@ -377,10 +377,10 @@ app.post('/api/tradovate/chart', async (req, res, next) => {
         credentials: z.object({
           name: z.string().min(1),
           password: z.string().min(1),
-          appId: z.string().min(1),
-          appVersion: z.string().min(1),
-          cid: z.number().int().min(0),
-          sec: z.string().min(1),
+          appId: z.string().min(1).optional(),
+          appVersion: z.string().min(1).optional(),
+          cid: z.number().int().min(0).optional(),
+          sec: z.string().min(1).optional(),
           environment: z.enum(['demo', 'live']).optional()
         }),
         symbol: z.string().min(1),

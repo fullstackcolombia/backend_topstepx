@@ -42,6 +42,15 @@ Variables opcionales:
 - `TRADOVATE_LIVE_WS_URL` (default: `wss://live.tradovateapi.com/v1/websocket`)
 - `TRADOVATE_MD_WS_URL` (default: `wss://md.tradovateapi.com/v1/websocket`)
 
+Credenciales internas opcionales recomendadas (para compatibilidad ampliada y para que el frontend use solo `name` + `password`):
+
+- `TRADOVATE_APP_ID`
+- `TRADOVATE_APP_VERSION`
+- `TRADOVATE_CID`
+- `TRADOVATE_SEC`
+
+Si estas variables estan configuradas, el backend las agrega automaticamente en `/auth/accesstokenrequest`; si no, enviara solo `name` y `password`.
+
 Nuevos endpoints para ESPAR mixto:
 
 - `POST /api/tradovate/accounts` conecta con credenciales y devuelve cuentas.

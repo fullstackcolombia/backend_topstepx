@@ -46,6 +46,13 @@ export class TradovateAdapter {
 
     this.marketDataWsUrl = (process.env.TRADOVATE_MD_WS_URL || 'wss://md.tradovateapi.com/v1/websocket').replace(/\/$/, '');
 
+    this.authDefaults = {
+      appId: String(process.env.TRADOVATE_APP_ID || '').trim(),
+      appVersion: String(process.env.TRADOVATE_APP_VERSION || '').trim(),
+      cid: Number(process.env.TRADOVATE_CID),
+      sec: String(process.env.TRADOVATE_SEC || '').trim()
+    };
+
     this.sessions = new Map();
   }
 
@@ -57,7 +64,8 @@ export class TradovateAdapter {
 
   _credKey(creds) {
     const env = this._resolveEnv(creds);
-    return `${env}::${creds.name}::${creds.appId}::${creds.cid}`;
+    const authBody = this._authBody(creds);
+    return `${env}::${authBody.name}::${authBody.appId}::${authBody.cid}`;
   }
 
   _resolveEnv(creds) {
@@ -74,14 +82,36 @@ export class TradovateAdapter {
   }
 
   _authBody(creds) {
-    return {
-      name: String(creds.name || '').trim(),
-      password: String(creds.password || ''),
-      appId: String(creds.appId || '').trim(),
-      appVersion: String(creds.appVersion || '').trim(),
-      cid: Number(creds.cid),
-      sec: String(creds.sec || '')
+    const body = {
+      name: String(creds?.name || '').trim(),
+      password: String(creds?.password || '')
     };
+
+    if (!body.name || !body.password) {
+      throw new Error('Tradovate credentials require name and password');
+    }
+
+    const appId = String(creds?.appId || this.authDefaults.appId || '').trim();
+    const appVersion = String(creds?.appVersion || this.authDefaults.appVersion || '').trim();
+    const sec = String(creds?.sec || this.authDefaults.sec || '').trim();
+    const cidRaw = creds?.cid ?? this.authDefaults.cid;
+    const cid = Number(cidRaw);
+
+    // Optional fields: include only when available to keep schema-compatible payloads.
+    if (appId) {
+      body.appId = appId;
+    }
+    if (appVersion) {
+      body.appVersion = appVersion;
+    }
+    if (Number.isInteger(cid) && cid >= 0) {
+      body.cid = cid;
+    }
+    if (sec) {
+      body.sec = sec;
+    }
+
+    return body;
   }
 
   async _postNoAuth(restBase, path, body) {

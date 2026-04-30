@@ -15,10 +15,10 @@ const topstepxCredentialsSchema = z.object({
 const tradovateCredentialsSchema = z.object({
   name: z.string().min(1).max(120),
   password: z.string().min(1).max(200),
-  appId: z.string().min(1).max(120),
-  appVersion: z.string().min(1).max(40),
-  cid: z.number().int().min(0),
-  sec: z.string().min(1).max(300)
+  appId: z.string().min(1).max(120).optional(),
+  appVersion: z.string().min(1).max(40).optional(),
+  cid: z.number().int().min(0).optional(),
+  sec: z.string().min(1).max(300).optional()
 });
 
 export const baseOrderSchema = z.object({
