@@ -129,6 +129,10 @@ export class TradovateAdapter {
     return fromPayload.includes('app is not registered') || fromMessage.includes('app is not registered');
   }
 
+  _isUnregisteredAppPayload(payload) {
+    return String(payload?.errorText || '').toLowerCase().includes('app is not registered');
+  }
+
   async _postNoAuth(restBase, path, body) {
     const response = await fetch(`${restBase}${path}`, {
       method: 'POST',
@@ -182,11 +186,30 @@ export class TradovateAdapter {
       }
     }
 
+    // Tradovate can also return HTTP 200 with errorText populated.
+    if (this._isUnregisteredAppPayload(payload)) {
+      const fallbackBody = this._stripAppRegistrationFields(authBody);
+      if (fallbackBody.name && fallbackBody.password) {
+        appendLog('WARN', `Tradovate auth app not registered for ${fallbackBody.name}; retrying without app fields`);
+        authBody = fallbackBody;
+        payload = await this._postNoAuth(restBase, '/auth/accesstokenrequest', authBody);
+      }
+    }
+
     if (payload?.['p-ticket'] && payload?.['p-time']) {
       const waitMs = Math.max(1, Number(payload['p-time'])) * 1000;
       await delay(waitMs);
       authBody = { ...authBody, 'p-ticket': payload['p-ticket'] };
       payload = await this._postNoAuth(restBase, '/auth/accesstokenrequest', authBody);
+
+      if (this._isUnregisteredAppPayload(payload)) {
+        const fallbackBody = this._stripAppRegistrationFields(authBody);
+        if (fallbackBody.name && fallbackBody.password) {
+          appendLog('WARN', `Tradovate auth app not registered for ${fallbackBody.name}; retrying without app fields`);
+          authBody = fallbackBody;
+          payload = await this._postNoAuth(restBase, '/auth/accesstokenrequest', authBody);
+        }
+      }
     }
 
     if (payload?.errorText) {
