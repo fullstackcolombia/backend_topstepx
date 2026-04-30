@@ -300,6 +300,8 @@ app.post('/api/topstepx/chart', async (req, res, next) => {
           .optional(),
         symbol: z.string().min(1),
         contractId: z.string().min(1).optional(),
+        accountId: z.union([z.string().min(1), z.number().int().min(1)]).optional(),
+        liveHint: z.boolean().optional(),
         asMuchAsElements: z.number().int().min(20).max(600).optional(),
         elementSize: z.number().int().min(1).max(60).optional()
       }),
@@ -309,6 +311,8 @@ app.post('/api/topstepx/chart', async (req, res, next) => {
     const chartRequest = {
       symbol: payload.symbol,
       contractId: payload.contractId,
+      accountId: payload.accountId,
+      liveHint: payload.liveHint,
       asMuchAsElements: payload.asMuchAsElements,
       elementSize: payload.elementSize
     };

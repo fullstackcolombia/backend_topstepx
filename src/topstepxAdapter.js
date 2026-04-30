@@ -370,14 +370,14 @@ export class TopstepxAdapter {
     return Array.from(byTimestamp.values()).sort((a, b) => a.tsMs - b.tsMs);
   }
 
-  buildChartRequestBodies({ symbol, contractId, asMuchAsElements, elementSize }) {
+  buildChartRequestBodies({ symbol, contractId, asMuchAsElements, elementSize, liveHint = true }) {
     const normalizedSymbol = String(symbol || '').trim();
     const size = Math.max(1, Math.min(60, Number(elementSize || 1)));
     const limit = Math.max(20, Math.min(600, Number(asMuchAsElements || 160)));
     const isSeconds = size < 60;
 
     const shared = {
-      live: true,
+      live: Boolean(liveHint),
       contractId,
       symbol: normalizedSymbol,
       asMuchAsElements: limit,
@@ -425,7 +425,8 @@ export class TopstepxAdapter {
 
     // AggregateBarUnit enum from Swagger: 1=Second, 2=Minute.
     const unitCandidates = isSeconds ? [1, 2] : [2, 1];
-    const liveCandidates = [true, false];
+    const preferredLive = typeof body?.liveHint === 'boolean' ? body.liveHint : true;
+    const liveCandidates = [preferredLive, !preferredLive];
     const variants = [];
 
     for (const unit of unitCandidates) {
@@ -490,7 +491,7 @@ export class TopstepxAdapter {
     return String(match.id);
   }
 
-  async resolveChartContractCandidatesWithCreds(instrument, explicitContractId, creds) {
+  async resolveChartContractCandidatesWithCreds(instrument, explicitContractId, creds, liveHint = true) {
     if (explicitContractId && typeof explicitContractId === 'string') {
       return [String(explicitContractId)];
     }
@@ -513,7 +514,7 @@ export class TopstepxAdapter {
 
     const allContracts = [];
     try {
-      const search = await this.requestWithCreds('/api/Contract/search', { searchText: instrument, live: true }, creds);
+      const search = await this.requestWithCreds('/api/Contract/search', { searchText: instrument, live: Boolean(liveHint) }, creds);
       if (Array.isArray(search?.contracts)) {
         allContracts.push(...search.contracts);
       }
@@ -522,7 +523,7 @@ export class TopstepxAdapter {
     }
 
     try {
-      const searchLead = await this.requestWithCreds('/api/Contract/search', { searchText: leadToken, live: true }, creds);
+      const searchLead = await this.requestWithCreds('/api/Contract/search', { searchText: leadToken, live: Boolean(liveHint) }, creds);
       if (Array.isArray(searchLead?.contracts)) {
         allContracts.push(...searchLead.contracts);
       }
@@ -531,7 +532,7 @@ export class TopstepxAdapter {
     }
 
     try {
-      const available = await this.requestWithCreds('/api/Contract/available', { live: true }, creds);
+      const available = await this.requestWithCreds('/api/Contract/available', { live: Boolean(liveHint) }, creds);
       if (Array.isArray(available?.contracts)) {
         allContracts.push(...available.contracts);
       }
@@ -597,6 +598,26 @@ export class TopstepxAdapter {
     return unique.slice(0, 5);
   }
 
+  async inferChartLiveHintWithCreds(request, creds) {
+    if (typeof request?.liveHint === 'boolean') {
+      return request.liveHint;
+    }
+
+    const accountId = this.parseAccountId(request?.accountId);
+    if (!accountId) {
+      return true;
+    }
+
+    const response = await this.requestWithCreds('/api/Account/search', { onlyActiveAccounts: true }, creds);
+    const accounts = Array.isArray(response?.accounts) ? response.accounts : [];
+    const match = accounts.find((account) => Number(account?.id) === Number(accountId));
+    if (!match) {
+      return true;
+    }
+
+    return !Boolean(match?.simulated);
+  }
+
   async requestChartWithCreds(chartPath, body, creds) {
     if (String(chartPath).toLowerCase().includes('/api/history/retrievebars')) {
       const variants = this.buildRetrieveBarsVariants(body);
@@ -638,7 +659,13 @@ export class TopstepxAdapter {
       throw new Error('TopstepX chart requires symbol');
     }
 
-    const contractIds = await this.resolveChartContractCandidatesWithCreds(symbol, request?.contractId, creds);
+    const liveHint = await this.inferChartLiveHintWithCreds(request, creds);
+    const contractIds = await this.resolveChartContractCandidatesWithCreds(
+      symbol,
+      request?.contractId,
+      creds,
+      liveHint
+    );
     const cacheKey = `${creds.userName}::${symbol}::${request?.elementSize || 1}::${request?.asMuchAsElements || 160}`;
     const now = Date.now();
 
@@ -659,7 +686,8 @@ export class TopstepxAdapter {
         symbol,
         contractId,
         asMuchAsElements: request?.asMuchAsElements,
-        elementSize: request?.elementSize
+        elementSize: request?.elementSize,
+        liveHint
       });
 
       for (const chartPath of chartPaths) {
