@@ -114,6 +114,21 @@ export class TradovateAdapter {
     return body;
   }
 
+  _stripAppRegistrationFields(authBody) {
+    const next = { ...authBody };
+    delete next.appId;
+    delete next.appVersion;
+    delete next.cid;
+    delete next.sec;
+    return next;
+  }
+
+  _isUnregisteredAppError(error) {
+    const fromPayload = String(error?.payload?.errorText || '').toLowerCase();
+    const fromMessage = String(error?.message || '').toLowerCase();
+    return fromPayload.includes('app is not registered') || fromMessage.includes('app is not registered');
+  }
+
   async _postNoAuth(restBase, path, body) {
     const response = await fetch(`${restBase}${path}`, {
       method: 'POST',
@@ -126,7 +141,10 @@ export class TradovateAdapter {
 
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(`Tradovate auth failed (${response.status}): ${JSON.stringify(payload)}`);
+      const error = new Error(`Tradovate auth failed (${response.status}): ${JSON.stringify(payload)}`);
+      error.statusCode = response.status;
+      error.payload = payload;
+      throw error;
     }
 
     return payload;
@@ -143,7 +161,26 @@ export class TradovateAdapter {
 
     const restBase = this._restBase(creds);
     let authBody = this._authBody(creds);
-    let payload = await this._postNoAuth(restBase, '/auth/accesstokenrequest', authBody);
+    let payload;
+
+    try {
+      payload = await this._postNoAuth(restBase, '/auth/accesstokenrequest', authBody);
+    } catch (error) {
+      // Some credential sets carry stale app registration metadata.
+      // If Tradovate rejects the app, retry with only name/password.
+      if (this._isUnregisteredAppError(error)) {
+        const fallbackBody = this._stripAppRegistrationFields(authBody);
+        if (fallbackBody.name && fallbackBody.password) {
+          appendLog('WARN', `Tradovate auth app not registered for ${fallbackBody.name}; retrying without app fields`);
+          authBody = fallbackBody;
+          payload = await this._postNoAuth(restBase, '/auth/accesstokenrequest', authBody);
+        } else {
+          throw error;
+        }
+      } else {
+        throw error;
+      }
+    }
 
     if (payload?.['p-ticket'] && payload?.['p-time']) {
       const waitMs = Math.max(1, Number(payload['p-time'])) * 1000;
