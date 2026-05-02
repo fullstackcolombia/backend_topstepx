@@ -225,6 +225,55 @@ export class TradovateAdapter {
     return payload;
   }
 
+  async debugAuthWithCreds(creds) {
+    const restBase = this._restBase(creds);
+    const fullBody = this._authBody(creds);
+    const basicBody = this._stripAppRegistrationFields(fullBody);
+
+    const variants = [
+      { label: 'lowercase + full body', path: '/auth/accesstokenrequest', body: fullBody },
+      { label: 'lowercase + basic body', path: '/auth/accesstokenrequest', body: basicBody },
+      { label: 'camelCase + full body', path: '/auth/accessTokenRequest', body: fullBody },
+      { label: 'camelCase + basic body', path: '/auth/accessTokenRequest', body: basicBody }
+    ];
+
+    const attempts = [];
+
+    for (const variant of variants) {
+      try {
+        const payload = await this._postNoAuth(restBase, variant.path, variant.body);
+        attempts.push({
+          ok: Boolean(payload?.accessToken),
+          label: variant.label,
+          path: variant.path,
+          payload: {
+            hasAccessToken: Boolean(payload?.accessToken),
+            hasPTicket: Boolean(payload?.['p-ticket']),
+            errorText: payload?.errorText || null
+          }
+        });
+      } catch (error) {
+        attempts.push({
+          ok: false,
+          label: variant.label,
+          path: variant.path,
+          statusCode: error?.statusCode || null,
+          payload: {
+            hasAccessToken: false,
+            hasPTicket: Boolean(error?.payload?.['p-ticket']),
+            errorText: error?.payload?.errorText || null
+          }
+        });
+      }
+    }
+
+    return {
+      env: this._resolveEnv(creds),
+      restBase,
+      attempts
+    };
+  }
+
   async requestWithCreds(path, method, creds, body = null, query = null, retry = true) {
     const auth = await this.authenticateWithCreds(creds);
     const restBase = this._restBase(creds);

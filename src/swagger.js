@@ -443,6 +443,59 @@ const orbSchema = {
   }
 };
 
+const tradovateCredentialsSchema = {
+  type: 'object',
+  required: ['name', 'password'],
+  properties: {
+    name: { type: 'string', example: 'my_tradovate_user' },
+    password: { type: 'string', format: 'password', example: '********' },
+    appId: { type: 'string', example: 'SampleApp' },
+    appVersion: { type: 'string', example: '1.0' },
+    cid: { type: 'integer', minimum: 0, example: 0 },
+    sec: { type: 'string', example: 'optional-app-secret' },
+    environment: { type: 'string', enum: ['demo', 'live'], example: 'live' }
+  }
+};
+
+const tradovateAuthDebugRequestSchema = {
+  type: 'object',
+  required: ['credentials'],
+  properties: {
+    credentials: tradovateCredentialsSchema
+  }
+};
+
+const tradovateAuthDebugExample = {
+  ok: true,
+  data: {
+    env: 'live',
+    restBase: 'https://live.tradovateapi.com/v1',
+    attempts: [
+      {
+        ok: false,
+        label: 'lowercase + full body',
+        path: '/auth/accesstokenrequest',
+        statusCode: 400,
+        payload: {
+          hasAccessToken: false,
+          hasPTicket: false,
+          errorText: 'The app is not registered'
+        }
+      },
+      {
+        ok: true,
+        label: 'lowercase + basic body',
+        path: '/auth/accesstokenrequest',
+        payload: {
+          hasAccessToken: true,
+          hasPTicket: false,
+          errorText: null
+        }
+      }
+    ]
+  }
+};
+
 function buildSpec() {
   return {
     openapi: '3.0.3',
@@ -460,6 +513,7 @@ function buildSpec() {
       { name: 'Orders' },
       { name: 'Strategies' },
       { name: 'Replicator' },
+      { name: 'Tradovate' },
       { name: 'WebSocket' }
     ],
     components: {
@@ -473,6 +527,8 @@ function buildSpec() {
         ReverseOrder: reverseSchema,
         CocStrategy: cocSchema,
         OrbStrategy: orbSchema,
+        TradovateCredentials: tradovateCredentialsSchema,
+        TradovateAuthDebugRequest: tradovateAuthDebugRequestSchema,
         StrategyToggle: {
           allOf: [
             simpleAccountsSchema,
@@ -861,6 +917,41 @@ function buildSpec() {
             },
             400: { $ref: '#/components/responses/ValidationError' },
             404: { $ref: '#/components/responses/ValidationError' },
+            409: { $ref: '#/components/responses/ValidationError' }
+          }
+        }
+      },
+      '/api/tradovate/auth-debug': {
+        post: {
+          tags: ['Tradovate'],
+          summary: 'Run Tradovate auth diagnostics',
+          description: 'Tests multiple Tradovate auth endpoint/body variants and returns sanitized diagnostics to troubleshoot auth issues such as "The app is not registered".',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/TradovateAuthDebugRequest' },
+                example: {
+                  credentials: {
+                    name: 'my_tradovate_user',
+                    password: '********',
+                    environment: 'live'
+                  }
+                }
+              }
+            }
+          },
+          responses: {
+            200: {
+              description: 'Diagnostic attempts completed',
+              content: {
+                'application/json': {
+                  schema: okEnvelope,
+                  example: tradovateAuthDebugExample
+                }
+              }
+            },
+            400: { $ref: '#/components/responses/ValidationError' },
             409: { $ref: '#/components/responses/ValidationError' }
           }
         }

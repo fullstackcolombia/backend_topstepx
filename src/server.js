@@ -412,6 +412,43 @@ app.post('/api/tradovate/chart', async (req, res, next) => {
   }
 });
 
+app.post('/api/tradovate/auth-debug', async (req, res, next) => {
+  try {
+    if (state.mode !== 'live') {
+      const error = new Error('Tradovate requires PANEL_MODE=live');
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const payload = parseOrThrow(
+      z.object({
+        credentials: z.object({
+          name: z.string().min(1),
+          password: z.string().min(1),
+          appId: z.string().min(1).optional(),
+          appVersion: z.string().min(1).optional(),
+          cid: z.number().int().min(0).optional(),
+          sec: z.string().min(1).optional(),
+          environment: z.enum(['demo', 'live']).optional()
+        })
+      }),
+      req.body
+    );
+
+    const tvEnv = String(payload?.credentials?.environment || 'live').toLowerCase();
+    if (tvEnv !== 'live') {
+      const error = new Error('Tradovate live mode only: set credentials.environment="live"');
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const result = await tradovate.debugAuthWithCreds(payload.credentials);
+    ok(res, result);
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post('/api/orders/cancel-all', (req, res, next) => {
   try {
     const payload = parseOrThrow(simpleAccountsSchema, req.body);
